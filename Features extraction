@@ -1,0 +1,69 @@
+import numpy as np
+from keras_facenet import FaceNet
+from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from sklearn.preprocessing import Normalizer
+import os
+
+# Initialisation du modèle FaceNet
+modele_facenet = FaceNet()
+
+# Initialisation du modèle VGG16
+modele_vgg16 = VGG16(include_top=False, input_shape=(224, 224, 3), pooling='avg')
+
+# Fonction pour obtenir les encodages d'un visage
+def obtenir_encodage(modele, image_visage, type_modele="facenet"):
+    """
+    Calcule la représentation encodée d'une image de visage.
+    
+    Paramètres :
+        modele : Le modèle pré-entraîné (FaceNet ou VGG16).
+        image_visage : Une image de visage sous forme de tableau numpy.
+        type_modele : Type de modèle, soit "facenet" ou "vgg16".
+    
+    Retourne :
+        L'encodage du visage sous forme de tableau numpy.
+    """
+    if type_modele == "facenet":
+        image_visage = np.expand_dims(image_visage, axis=0)  # Ajouter une dimension de lot
+        encodage = modele.embeddings(image_visage)[0]
+    elif type_modele == "vgg16":
+        image_visage = preprocess_input(image_visage)  # Prétraiter pour VGG16
+        image_visage = np.expand_dims(image_visage, axis=0)  # Ajouter une dimension de lot
+        encodage = modele.predict(image_visage)[0]
+    else:
+        raise ValueError("Type de modèle invalide. Choisissez 'facenet' ou 'vgg16'.")
+    return encodage
+
+# Normalisation des encodages
+normaliseur = Normalizer(norm='l2')
+
+# Dossier contenant les images de visages
+dossier_images_visages = "chemin/vers/images/visages"
+
+# Préparer le stockage des encodages
+encodages = []
+etiquettes = []
+
+# Boucle sur les images dans le dossier
+for nom_fichier in os.listdir(dossier_images_visages):
+    if nom_fichier.lower().endswith(('.png', '.jpg', '.jpeg')):
+        # Charger l'image
+        chemin_fichier = os.path.join(dossier_images_visages, nom_fichier)
+        image = load_img(chemin_fichier, target_size=(160, 160))  # Ajuster pour FaceNet
+        image_tableau = img_to_array(image)
+        
+        # Obtenir l'encodage avec FaceNet
+        encodage = obtenir_encodage(modele_facenet, image_tableau, type_modele="facenet")
+        
+        # Normaliser l'encodage
+        encodage = normaliseur.transform([encodage])[0]
+        
+        # Stocker l'encodage et l'étiquette
+        encodages.append(encodage)
+        etiquettes.append(nom_fichier.split('.')[0])  # Étiquette basée sur le nom de fichier
+
+# Sauvegarder les encodages et les étiquettes dans un fichier .npz
+fichier_sortie = "encodages_visages.npz"
+np.savez_compressed(fichier_sortie, encodages=np.array(encodages), etiquettes=np.array(etiquettes))
+print(f"Encodages sauvegardés dans {fichier_sortie}")
