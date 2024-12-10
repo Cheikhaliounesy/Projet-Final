@@ -1,0 +1,106 @@
+import streamlit as st
+import sqlite3
+from PIL import Image
+import face_recognition
+import numpy as np
+
+# Initialiser la base de données
+def init_db():
+    conn = sqlite3.connect("demandeurs.db")
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS utilisateurs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prenom TEXT,
+                    nom TEXT,
+                    date_naissance TEXT,
+                    lieu_naissance TEXT,
+                    prenom_pere TEXT,
+                    prenom_mere TEXT,
+                    nom_mere TEXT,
+                    numero_registre TEXT UNIQUE,
+                    photo BLOB,
+                    encodage_facial BLOB
+                )''')
+    conn.commit()
+    conn.close()
+
+# Ajouter un utilisateur dans la base de données
+def ajouter_utilisateur(prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, photo, encodage_facial):
+    conn = sqlite3.connect("demandeurs.db")
+    c = conn.cursor()
+    try:
+        c.execute('''INSERT INTO utilisateurs 
+                     (prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, photo, encodage_facial)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                  (prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, photo, encodage_facial))
+        conn.commit()
+        st.success("Utilisateur enregistré avec succès.")
+    except sqlite3.IntegrityError:
+        st.error("Un utilisateur avec ce numéro de registre existe déjà.")
+    finally:
+        conn.close()
+
+# Vérifier si un encodage facial existe déjà
+def verifier_doublon_facial(encodage_facial):
+    conn = sqlite3.connect("demandeurs.db")
+    c = conn.cursor()
+    c.execute("SELECT encodage_facial FROM utilisateurs")
+    utilisateurs = c.fetchall()
+    for utilisateur in utilisateurs:
+        if utilisateur[0] is not None:
+            encodage_enregistre = np.frombuffer(utilisateur[0], dtype=np.float64)
+            if face_recognition.compare_faces([encodage_enregistre], encodage_facial)[0]:
+                conn.close()
+                return True
+    conn.close()
+    return False
+
+# Initialisation de la base de données
+init_db()
+
+# Interface Streamlit
+st.title("Plateforme de Demande d'Extrait de Naissance")
+st.markdown("""
+Bienvenue sur notre plateforme de demande d'extrait de naissance basée sur la reconnaissance faciale.  
+Cette méthode garantit l'authenticité des informations et évite les fraudes en associant chaque demandeur à une photo unique.  
+
+### Étapes à suivre :
+1. Renseignez vos informations personnelles dans le formulaire.
+2. Téléchargez une photo claire de votre visage.
+3. Soumettez le formulaire pour validation et enregistrement.
+""")
+
+# Formulaire d'enregistrement
+st.header("Enregistrement des demandeurs")
+prenom = st.text_input("Prénom")
+nom = st.text_input("Nom")
+date_naissance = st.date_input("Date de naissance")
+lieu_naissance = st.text_input("Lieu de naissance")
+prenom_pere = st.text_input("Prénom du père")
+prenom_mere = st.text_input("Prénom de la mère")
+nom_mere = st.text_input("Nom de famille de la mère")
+numero_registre = st.text_input("Numéro de registre unique")
+
+# Téléchargement de la photo
+image_file = st.file_uploader("Téléchargez une photo de vous (format JPG/PNG)", type=["jpg", "jpeg", "png"])
+
+if image_file:
+    image = Image.open(image_file)
+    st.image(image, caption="Photo téléchargée", use_column_width=True)
+    image_np = np.array(image)
+    encodages_faciaux = face_recognition.face_encodings(image_np)
+
+    if st.button("Enregistrer"):
+        if not prenom or not nom or not date_naissance or not lieu_naissance or not prenom_pere or not prenom_mere or not nom_mere or not numero_registre or not image_file:
+            st.error("Veuillez remplir tous les champs avant de soumettre le formulaire.")
+        elif len(encodages_faciaux) == 0:
+            st.error("Aucun visage détecté dans la photo. Veuillez réessayer avec une autre photo.")
+        else:
+            encodage_facial_serialise = encodages_faciaux[0].tobytes()
+            if verifier_doublon_facial(encodages_faciaux[0]):
+                st.error("Cette photo correspond déjà à un utilisateur enregistré.")
+            else:
+                ajouter_utilisateur(prenom, nom, str(date_naissance), lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, image_file.getbuffer(), encodage_facial_serialise)
+                # Option pour ajouter un autre demandeur
+                if st.button("Ajouter un autre demandeur"):
+                    st.experimental_rerun()
