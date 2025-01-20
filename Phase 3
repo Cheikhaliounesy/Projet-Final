@@ -1,0 +1,204 @@
+import streamlit as st
+import sqlite3
+from PIL import Image
+import face_recognition
+import numpy as np
+import hashlib
+from datetime import datetime
+import logging
+
+# Configurer les logs
+logging.basicConfig(level=logging.INFO, filename="app.log", 
+                    format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Initialiser la base de données
+def init_db():
+    conn = sqlite3.connect("demandeurs.db")
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS utilisateurs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prenom TEXT,
+                    nom TEXT,
+                    date_naissance TEXT,
+                    lieu_naissance TEXT,
+                    prenom_pere TEXT,
+                    prenom_mere TEXT,
+                    nom_mere TEXT,
+                    numero_registre TEXT UNIQUE,
+                    photo BLOB,
+                    encodage_facial BLOB
+                )''')
+    conn.commit()
+    conn.close()
+
+# Réinitialiser la base de données
+def reset_db():
+    conn = sqlite3.connect("demandeurs.db")
+    c = conn.cursor()
+    c.execute("DROP TABLE IF EXISTS utilisateurs")
+    init_db()
+    conn.close()
+
+# Ajouter un utilisateur dans la base de données
+def ajouter_utilisateur(prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, photo, encodage_facial):
+    try:
+        conn = sqlite3.connect("demandeurs.db")
+        c = conn.cursor()
+        hashed_registre = hashlib.sha256(numero_registre.encode()).hexdigest()
+        c.execute('''INSERT INTO utilisateurs 
+                     (prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, photo, encodage_facial)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                  (prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, hashed_registre, photo, encodage_facial))
+        conn.commit()
+        st.success("Utilisateur enregistré avec succès.")
+        logging.info(f"Utilisateur {prenom} {nom} ajouté avec succès.")
+    except sqlite3.IntegrityError as e:
+        st.error("Un utilisateur avec ce numéro de registre existe déjà.")
+        logging.error(f"Erreur d'insertion dans la base : {e}")
+    finally:
+        conn.close()
+
+# Modifier un utilisateur
+def modifier_utilisateur(user_id, prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere):
+    try:
+        conn = sqlite3.connect("demandeurs.db")
+        c = conn.cursor()
+        c.execute('''UPDATE utilisateurs 
+                     SET prenom=?, nom=?, date_naissance=?, lieu_naissance=?, prenom_pere=?, prenom_mere=?, nom_mere=? 
+                     WHERE id=?''',
+                  (prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, user_id))
+        conn.commit()
+        st.success("Utilisateur modifié avec succès.")
+        logging.info(f"Utilisateur {prenom} {nom} modifié avec succès.")
+    except Exception as e:
+        st.error("Erreur lors de la modification de l'utilisateur.")
+        logging.error(f"Erreur de modification : {e}")
+    finally:
+        conn.close()
+
+# Vérifier les informations d'un utilisateur par reconnaissance faciale
+def verifier_utilisateur_par_visage(encodage_facial, tol=0.6):
+    conn = sqlite3.connect("demandeurs.db")
+    c = conn.cursor()
+    c.execute("SELECT prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, encodage_facial FROM utilisateurs")
+    utilisateurs = c.fetchall()
+    for utilisateur in utilisateurs:
+        if utilisateur[-1] is not None:
+            encodage_enregistre = np.frombuffer(utilisateur[-1], dtype=np.float64)
+            distance = np.linalg.norm(encodage_facial - encodage_enregistre)
+            if distance < tol:
+                conn.close()
+                return utilisateur[:-1]
+    conn.close()
+    return None
+
+# Initialisation de la base de données
+init_db()
+
+# Interface principale
+st.title("Plateforme de Gestion des Demandes d'Extraits de Naissance")
+option = st.sidebar.selectbox("Choisissez une option", ["Enregistrer un utilisateur", "Vérification par photo", "Administrateur"])
+
+if option == "Enregistrer un utilisateur":
+    st.header("Enregistrement des demandeurs")
+    prenom = st.text_input("Prénom")
+    nom = st.text_input("Nom")
+    date_naissance = st.date_input("Date de naissance", value=datetime(2000, 1, 1), min_value=datetime(1900, 1, 1), max_value=datetime.today())
+    lieu_naissance = st.text_input("Lieu de naissance")
+    prenom_pere = st.text_input("Prénom du père")
+    prenom_mere = st.text_input("Prénom de la mère")
+    nom_mere = st.text_input("Nom de famille de la mère")
+    numero_registre = st.text_input("Numéro de registre unique")
+
+    # Téléchargement de la photo
+    image_file = st.file_uploader("Téléchargez une photo (format JPG/PNG)", type=["jpg", "jpeg", "png"])
+    if image_file:
+        try:
+            image = Image.open(image_file)
+            st.image(image, caption="Photo téléchargée", use_column_width=True)
+            image_np = np.array(image)
+            encodages_faciaux = face_recognition.face_encodings(image_np)
+            if len(encodages_faciaux) == 0:
+                st.error("Aucun visage détecté dans la photo. Veuillez réessayer avec une autre photo.")
+            elif st.button("Enregistrer"):
+                if not all([prenom, nom, date_naissance, lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, image_file]):
+                    st.error("Veuillez remplir tous les champs avant de soumettre le formulaire.")
+                else:
+                    encodage_facial_serialise = encodages_faciaux[0].tobytes()
+                    ajouter_utilisateur(prenom, nom, str(date_naissance), lieu_naissance, prenom_pere, prenom_mere, nom_mere, numero_registre, image_file.getbuffer(), encodage_facial_serialise)
+        except Exception as e:
+            st.error("Erreur lors du traitement de la photo. Veuillez réessayer.")
+            logging.error(f"Erreur de traitement de l'image : {e}")
+
+elif option == "Vérification par photo":
+    st.header("Vérification par photo")
+    image_file = st.file_uploader("Téléchargez une photo pour vérification (format JPG/PNG)", type=["jpg", "jpeg", "png"])
+    if image_file:
+        try:
+            image = Image.open(image_file)
+            st.image(image, caption="Photo téléchargée", use_column_width=True)
+            image_np = np.array(image)
+            encodages_faciaux = face_recognition.face_encodings(image_np)
+            if len(encodages_faciaux) == 0:
+                st.error("Aucun visage détecté dans la photo. Veuillez réessayer avec une autre photo.")
+            else:
+                utilisateur = verifier_utilisateur_par_visage(encodages_faciaux[0])
+                if utilisateur:
+                    st.success("Utilisateur trouvé !")
+                    st.write(f"**Prénom :** {utilisateur[0]}")
+                    st.write(f"**Nom :** {utilisateur[1]}")
+                    st.write(f"**Date de naissance :** {utilisateur[2]}")
+                    st.write(f"**Lieu de naissance :** {utilisateur[3]}")
+                    st.write(f"**Prénom du père :** {utilisateur[4]}")
+                    st.write(f"**Prénom de la mère :** {utilisateur[5]}")
+                    st.write(f"**Nom de famille de la mère :** {utilisateur[6]}")
+                    st.write(f"**Numéro de registre :** {utilisateur[7]}")
+                else:
+                    st.error("Aucun utilisateur correspondant trouvé.")
+        except Exception as e:
+            st.error("Erreur lors du traitement de la photo. Veuillez réessayer.")
+            logging.error(f"Erreur de traitement de l'image : {e}")
+
+elif option == "Administrateur":
+    st.header("Section Administrateur")
+    admin_option = st.radio("Options administratives", ["Réinitialiser la base", "Modifier un utilisateur"])
+
+    if admin_option == "Réinitialiser la base":
+        if st.button("Réinitialiser"):
+            try:
+                reset_db()
+                st.success("Base de données réinitialisée avec succès.")
+            except Exception as e:
+                st.error("Erreur lors de la réinitialisation de la base.")
+                logging.error(f"Erreur de réinitialisation : {e}")
+
+    elif admin_option == "Modifier un utilisateur":
+        try:
+            conn = sqlite3.connect("demandeurs.db")
+            c = conn.cursor()
+            c.execute("SELECT id, prenom, nom FROM utilisateurs")
+            utilisateurs = c.fetchall()
+            conn.close()
+
+            utilisateur_selectionne = st.selectbox(
+                "Sélectionnez un utilisateur à modifier",
+                utilisateurs,
+                format_func=lambda x: f"{x[1]} {x[2]}"
+            )
+
+            if utilisateur_selectionne:
+                with st.form(key="form_modification"):
+                    prenom = st.text_input("Prénom", utilisateur_selectionne[1])
+                    nom = st.text_input("Nom", utilisateur_selectionne[2])
+                    date_naissance = st.date_input("Date de naissance")
+                    lieu_naissance = st.text_input("Lieu de naissance")
+                    prenom_pere = st.text_input("Prénom du père")
+                    prenom_mere = st.text_input("Prénom de la mère")
+                    nom_mere = st.text_input("Nom de famille de la mère")
+
+                    submit_button = st.form_submit_button("Modifier")
+                    if submit_button:
+                        modifier_utilisateur(utilisateur_selectionne[0], prenom, nom, str(date_naissance), lieu_naissance, prenom_pere, prenom_mere, nom_mere)
+        except Exception as e:
+            st.error("Erreur lors de la modification de l'utilisateur.")
+            logging.error(f"Erreur de modification : {e}")
